@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Configure",
+            "type": "shell",
+            "command": "mkdir -p build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=1"
+        },
+        {
+            "label": "Build",
+            "type": "shell",
+            "dependsOn": "Configure",
+            "command": "cmake --build build"
+        }
+    ]
+}
