@@ -12,7 +12,10 @@ to_string(TypeID type_id) -> const char*
       return "int";
     case TypeID::string:
       return "string";
+    case TypeID::struct_:
+      return "struct";
   }
+
   return "";
 }
 

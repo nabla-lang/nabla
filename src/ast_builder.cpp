@@ -25,7 +25,11 @@ class ASTBuilderImpl final
   /// @details The indices of each element in this vector correspond to the value IDs used in the AST.
   std::vector<ast::Expr*> exprs_;
 
+  std::map<const DeclNode*, size_t> decl_ids_;
+
   std::vector<Diagnostic> diagnostics_;
+
+  size_t last_expr_id_{ 0 };
 
 public:
   ASTBuilderImpl(ast::Module* m, const AnnotationTable* annotations)
@@ -42,7 +46,7 @@ public:
   }
 
 protected:
-  std::string unescape_string_literal(const Token& token)
+  [[nodiscard]] static auto unescape_string_literal(const Token& token) -> std::string
   {
     const auto& data = token.data;
 
@@ -98,6 +102,8 @@ protected:
     return result;
   }
 
+  // nodes
+
   void visit(const PrintNode& node) override
   {
     for (const auto& expr : node.args()) {
@@ -108,6 +114,27 @@ protected:
     }
     module_->stmts.emplace_back(std::make_unique<ast::PrintEndStmt>());
   }
+
+  void visit(const DeclNode& node) override
+  {
+    node.get_value().accept(*this);
+
+    const auto id = exprs_.size() - 1;
+
+    decl_ids_.emplace(&node, id);
+  }
+
+  void visit(const FuncNode& node) override
+  {
+    (void)node;
+    //
+  }
+
+  void visit(const StructNode&) override {}
+
+  void visit(const ReturnNode&) override {}
+
+  // expressions
 
   void visit(const StringLiteralExpr& expr) override
   {
@@ -128,7 +155,7 @@ protected:
       add_diagnostic("unable to parse integer", &token);
     }
 
-    auto ast_expr = std::make_unique<ast::LiteralExpr<float>>(value);
+    auto ast_expr = std::make_unique<ast::LiteralExpr<int>>(value);
 
     push_assign_expr(std::move(ast_expr));
   }
@@ -137,7 +164,7 @@ protected:
   {
     const auto& token = expr.token();
 
-    // TODO : this is really inefficient, but compiler support for from_chars (for floats) is not great yet.
+    // TODO : this is really inefficient, but compiler support for from_chars for floats is not great (yet).
     std::istringstream tmp_stream(std::string(token.data));
     float value{ 0.0F };
     tmp_stream >> value;
@@ -147,35 +174,79 @@ protected:
     push_assign_expr(std::move(ast_expr));
   }
 
+  void visit(const VarExpr& expr) override
+  {
+    auto& annotation = annotations_->var_expr.at(&expr);
+
+    const auto* decl = annotation.decl;
+
+    const auto id = decl_ids_.at(decl);
+
+    last_expr_id_ = id;
+  }
+
+  void visit(const CallExpr& expr) override
+  {
+    (void)expr;
+    // TODO
+  }
+
   void visit(const AddExpr& expr) override
   {
-    expr.left().accept(*this);
+    const auto l = build_expr(expr.left());
+    const auto r = build_expr(expr.right());
 
-    expr.right().accept(*this);
+    const auto& annotation = annotations_->add_expr.at(&expr);
 
-    (void)expr;
-    //
+    switch (annotation.op) {
+      case Annotation<AddExpr>::Op::none:
+        break;
+      case Annotation<AddExpr>::Op::add_int:
+        last_expr_id_ = push_assign_expr(std::make_unique<ast::AddExpr<int>>(l, r));
+        break;
+      case Annotation<AddExpr>::Op::add_float:
+        last_expr_id_ = push_assign_expr(std::make_unique<ast::AddExpr<float>>(l, r));
+        break;
+    }
   }
 
   void visit(const MulExpr& expr) override
   {
-    (void)expr;
-    //
+    const auto l = build_expr(expr.left());
+    const auto r = build_expr(expr.right());
+
+    const auto& annotation = annotations_->mul_expr.at(&expr);
+
+    switch (annotation.op) {
+      case Annotation<MulExpr>::Op::none:
+        break;
+      case Annotation<MulExpr>::Op::mul_int:
+        push_assign_expr(std::make_unique<ast::MulExpr<int, int>>(l, r));
+        break;
+      case Annotation<MulExpr>::Op::mul_float:
+        push_assign_expr(std::make_unique<ast::MulExpr<float, float>>(l, r));
+        break;
+    }
   }
 
-  [[nodiscard]] auto push_expr(ast::Expr* expr) -> size_t
+  [[nodiscard]] auto build_expr(const Expr& expr) -> size_t
   {
-    const auto id = exprs_.size();
-    exprs_.emplace_back(expr);
-    return id;
+    expr.accept(*this);
+    return last_expr_id_;
   }
 
   [[maybe_unused]] auto push_assign_expr(std::unique_ptr<ast::Expr> expr) -> size_t
   {
-    const auto id = push_expr(expr.get());
-    auto stmt = std::make_unique<ast::AssignStmt>(id, std::move(expr));
+    return push_assign_expr(std::move(expr), exprs_.size());
+  }
+
+  [[maybe_unused]] auto push_assign_expr(std::unique_ptr<ast::Expr> expr, const size_t expr_id) -> size_t
+  {
+    exprs_.emplace_back(expr.get());
+    auto stmt = std::make_unique<ast::AssignStmt>(expr_id, std::move(expr));
     module_->stmts.emplace_back(std::move(stmt));
-    return id;
+    last_expr_id_ = expr_id;
+    return expr_id;
   }
 
   void add_diagnostic(const std::string& what, const Token* token)

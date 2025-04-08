@@ -2,11 +2,9 @@
 
 #include "annotator.h"
 
-#include "annotators/add_expr.h"
-
 namespace nabla {
 
 [[nodiscard]] auto
-annotate(const std::vector<NodePtr>& nodes) -> AnnotationTable;
+annotate(const SyntaxTree& tree) -> AnnotationTable;
 
 } // namespace nabla

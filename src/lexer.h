@@ -11,6 +11,7 @@ enum class TokenKind
   none,
   space,
   comment,
+  incomplete_comment,
   identifier,
   string_literal,
   incomplete_string_literal,
@@ -30,6 +31,10 @@ struct Token final
   size_t line{ 1 };
 
   size_t column{ 1 };
+
+  [[nodiscard]] auto operator<(const Token& other) const -> bool { return data < other.data; }
+
+  [[nodiscard]] auto operator<(const std::string_view& other) const -> bool { return data < other; }
 
   [[nodiscard]] auto operator==(const char c) const -> bool { return (data.size() == 1) && (data[0] == c); }
 
@@ -71,6 +76,34 @@ public:
     const auto first = at(0);
     if ((first == ' ') || (first == '\t') || (first == '\r') || (first == '\n')) {
       return produce(TK::space, 1);
+    }
+
+    if ((first == '/') && (at(1) == '/')) {
+      size_t len = 2;
+      while (in_bounds(len)) {
+        if (at(len) == '\n') {
+          break;
+        }
+        len++;
+      }
+      return produce(TK::comment, len);
+    }
+
+    if ((first == '/') && (at(1) == '*')) {
+      size_t len = 2;
+      auto terminated{ false };
+      while (in_bounds(len)) {
+        if ((at(len) == '*') && (at(len + 1) == '/')) {
+          len += 2;
+          terminated = true;
+          break;
+        }
+        len++;
+      }
+      if (!terminated) {
+        return produce(TK::incomplete_comment, 2);
+      }
+      return produce(TK::comment, len);
     }
 
     if (is_nondigit(first)) {

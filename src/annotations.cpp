@@ -25,6 +25,10 @@ public:
 
   void visit(const MulExpr&) override {}
 
+  void visit(const VarExpr&) override {}
+
+  void visit(const CallExpr&) override {}
+
   auto result() const -> const Type* { return resolved_type_; }
 };
 
@@ -39,6 +43,14 @@ AnnotationTable::resolve_type(const Expr& expr) const -> const Type*
 
   if (auto it = mul_expr.find(&expr); it != mul_expr.end()) {
     return it->second.result_type.get();
+  }
+
+  if (auto it = var_expr.find(&expr); it != var_expr.end()) {
+    if (!it->second.decl) {
+      return nullptr;
+    }
+
+    return resolve_type(it->second.decl->get_value());
   }
 
   // The expression might be a literal type.

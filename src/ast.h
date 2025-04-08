@@ -74,6 +74,20 @@ public:
   [[nodiscard]] auto value() const -> T { return value_; }
 };
 
+template<typename T>
+class RefExpr final : public ExprBase<LiteralExpr<T>>
+{
+  size_t id_;
+
+public:
+  explicit RefExpr(size_t id)
+    : id_(id)
+  {
+  }
+
+  [[nodiscard]] auto id() const -> size_t { return id_; }
+};
+
 template<typename Derived>
 class BinaryExpr : public ExprBase<Derived>
 {

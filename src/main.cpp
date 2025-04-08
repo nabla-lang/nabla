@@ -7,10 +7,8 @@
 #include <stdlib.h>
 
 #include "annotate.h"
-#include "ast.h"
-#include "ast_builder.h"
+#include "codegen/generator.h"
 #include "console.h"
-#include "interpreter.h"
 #include "lexer.h"
 #include "parser.h"
 #include "validator.h"
@@ -43,17 +41,22 @@ public:
         console.print_diagnostic(filename.string(), diagnostic, source);
         return false;
       }
+      if (token == nabla::TK::incomplete_comment) {
+        nabla::Diagnostic diagnostic{ "unterminated comment", &token };
+        console.print_diagnostic(filename.string(), diagnostic, source);
+        return false;
+      }
       tokens.emplace_back(token);
     }
 
     auto parser = nabla::Parser::create(tokens.data(), tokens.size());
 
-    std::vector<nabla::NodePtr> nodes;
+    nabla::SyntaxTree tree;
 
     while (!parser->eof()) {
       try {
         auto node = parser->parse();
-        nodes.emplace_back(std::move(node));
+        tree.nodes.emplace_back(std::move(node));
       } catch (const nabla::FatalError& error) {
         const auto& diagnostic = error.diagnostic();
         console.print_diagnostic(filename.string(), diagnostic, source);
@@ -61,11 +64,11 @@ public:
       }
     }
 
-    const auto annotations = annotate(nodes);
+    const auto annotations = annotate(tree);
 
     auto validator = nabla::Validator::create();
 
-    validator->validate(nodes, annotations);
+    validator->validate(tree.nodes, annotations);
 
     for (const auto& diagnostic : validator->get_diagnostics()) {
       console.print_diagnostic(filename.string(), diagnostic, source);
@@ -75,27 +78,17 @@ public:
       return false;
     }
 
-    nabla::ast::Module mod;
+    auto generator = nabla::codegen::Generator::create("c++", &annotations);
 
-    auto ast_builder = nabla::ASTBuilder::create(&mod, &annotations);
+    generator->generate(tree);
 
-    for (auto& node : nodes) {
-      if (!ast_builder->build(*node)) {
-        return false;
-      }
-    }
-
-    nabla::Runtime runtime;
-
-    auto interpreter = nabla::Interpreter::create(&runtime);
-
-    interpreter->exec(mod);
+    std::cout << generator->source();
 
     return true;
   }
 
 protected:
-  [[nodiscard]] auto read_file(std::ifstream& file) -> std::string
+  [[nodiscard]] static auto read_file(std::ifstream& file) -> std::string
   {
     file.seekg(0, std::ios::end);
 
@@ -126,13 +119,35 @@ main(int, char** argv) -> int
 
   console->set_color_enabled(true);
 
-  for (const auto& entry : std::filesystem::directory_iterator(".")) {
-    if (entry.is_regular_file()) {
-      if (entry.path().extension() != ".nabla") {
-        continue;
+  if (!std::filesystem::exists("src")) {
+    console->print_error("no src/ directory exists in the current directory");
+    return EXIT_FAILURE;
+  }
+
+  std::vector<std::filesystem::path> directory_queue{ "src", "deps" };
+
+  while (!directory_queue.empty()) {
+
+    std::filesystem::path current = directory_queue[0];
+
+    directory_queue.erase(directory_queue.begin());
+
+    if (!std::filesystem::exists(current)) {
+      continue;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(current)) {
+      if (entry.is_regular_file()) {
+        if (entry.path().extension() != ".nabla") {
+          continue;
+        }
+        if (!program.compile(entry, *console)) {
+          return EXIT_FAILURE;
+        }
       }
-      if (!program.compile(entry, *console)) {
-        return EXIT_FAILURE;
+
+      if (entry.is_directory()) {
+        directory_queue.emplace_back(current / entry);
       }
     }
   }

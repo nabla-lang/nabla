@@ -5,6 +5,11 @@ namespace nabla {
 auto
 AddExprAnnotator::annotate(const AddExpr& expr, AnnotationType& annotation, AnnotationTable& table) -> bool
 {
+  if (annotation.result_type) {
+    // we're already done annotating
+    return false;
+  }
+
   const auto* l_type = table.resolve_type(expr.left());
   if (!l_type) {
     return false;

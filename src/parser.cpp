@@ -6,6 +6,18 @@ namespace nabla {
 
 namespace {
 
+// Note: When getting tokens, be sure to avoid copying them.
+//       Use a reference to them instead. The reason is because
+//       diagnostics take token pointers, and in order to ensure
+//       that the pointer is valid when the diagnostic is thrown
+//       in an exception, it has to remain alive until the exception
+//       is caught.
+//
+// In other words, do this:
+//   const auto& token = at(0);
+// Instead of this:
+//   const auto token = at(0);
+
 class ParserImpl final : public Parser
 {
   const Token* tokens_{ 0 };
@@ -26,7 +38,19 @@ public:
   [[nodiscard]] auto parse() -> NodePtr override
   {
     const auto& first = at(0);
-    if (first == "print") {
+    if (first == "let") {
+      next();
+      return parse_let_stmt(first);
+    } else if (first == "fn") {
+      next();
+      return parse_fn_def(first);
+    } else if (first == "struct") {
+      next();
+      return parse_struct_decl(first);
+    } else if (first == "return") {
+      next();
+      return parse_return_stmt(first);
+    } else if (first == "print") {
       next();
       return parse_print_stmt(first);
     }
@@ -38,6 +62,8 @@ public:
 
 protected:
   void throw_error(const char* what, const Token* token) { throw FatalError(Diagnostic{ what, token }); }
+
+  void missing_r_operand(const Token* op_token) { throw_error("missing right operand", op_token); }
 
   void next() { offset_++; }
 
@@ -66,6 +92,297 @@ protected:
     }
 
     next();
+  }
+
+  [[nodiscard]] auto parse_fn_def(const Token& fn_token) -> NodePtr
+  {
+    if (eof()) {
+      throw_error("expected function name after this", &fn_token);
+    }
+
+    const auto& name = at(0);
+    if (name != TK::identifier) {
+      throw_error("expected this to be a function name", &name);
+    }
+    next();
+
+    auto params = parse_param_list(name);
+
+    auto body = parse_fn_body(name);
+
+    return std::make_unique<FuncNode>(&name, std::move(params), std::move(body));
+  }
+
+  [[nodiscard]] auto parse_fn_body(const Token& name) -> std::vector<NodePtr>
+  {
+    if (eof()) {
+      throw_error("missing function body", &name);
+    }
+
+    const auto& l_bracket = at(0);
+    if (l_bracket != '{') {
+      throw_error("expected '{' here", &l_bracket);
+    }
+    next();
+
+    std::vector<NodePtr> body;
+    while (!eof()) {
+      if (at(0) == '}') {
+        break;
+      }
+      auto inner = parse();
+      if (!inner) {
+        break;
+      }
+      body.emplace_back(std::move(inner));
+    }
+
+    if (eof()) {
+      throw_error("missing '}'", &l_bracket);
+    }
+
+    const auto& r_bracket = at(0);
+    if (r_bracket != '}') {
+      throw_error("expected '}' here", &r_bracket);
+    }
+    next();
+    return std::move(body);
+  }
+
+  [[nodiscard]] auto parse_param_list(const Token& anchor) -> std::vector<std::unique_ptr<DeclNode>>
+  {
+    if (eof()) {
+      throw_error("expected parameter list after this", &anchor);
+    }
+
+    const auto& l_paren = at(0);
+    if (l_paren != '(') {
+      throw_error("expected a '(' here", &l_paren);
+    }
+    next();
+
+    std::vector<std::unique_ptr<DeclNode>> params;
+
+    while (!eof()) {
+
+      if (at(0) == ')') {
+        break;
+      }
+
+      auto param = parse_param_decl();
+      if (!param) {
+        break;
+      }
+      params.emplace_back(std::move(param));
+
+      if (eof() || (at(0) == ')')) {
+        break;
+      }
+
+      const auto& comma = at(0);
+      if (comma != ',') {
+        throw_error("expected either a ',' or ')' here", &comma);
+      }
+      next();
+    }
+
+    if (eof() || (at(0) != ')')) {
+      throw_error("missing ')'", &l_paren);
+    }
+    next();
+
+    return params;
+  }
+
+  [[nodiscard]] auto parse_param_decl() -> std::unique_ptr<DeclNode>
+  {
+    const auto& name = at(0);
+    if (name != TK::identifier) {
+      return nullptr;
+    }
+    next();
+
+    const auto& colon = at(0);
+    if (colon != ':') {
+      return std::make_unique<DeclNode>(name, /*value=*/nullptr, /*immutable=*/true, /*type=*/nullptr);
+    }
+    next();
+
+    auto type = parse_type();
+    if (!type) {
+      throw_error("expected type after this", &colon);
+    }
+
+    ExprPtr default_value;
+
+    if (!eof() && at(0) == '=') {
+      next();
+      default_value = parse_expr();
+    }
+
+    return std::make_unique<DeclNode>(DeclNode(name, std::move(default_value), /*immutable=*/true, std::move(type)));
+  }
+
+  [[nodiscard]] auto parse_type() -> std::unique_ptr<TypeInstance>
+  {
+    if (eof()) {
+      return nullptr;
+    }
+
+    const auto& name = at(0);
+    if (name != TK::identifier) {
+      throw_error("expected a type name here", &name);
+    }
+    next();
+
+    std::vector<ExprPtr> args;
+
+    if (!eof() && (at(0) == '<')) {
+      const auto& l_bracket = at(0);
+      next();
+
+      while (!eof()) {
+        if (at(0) == '>') {
+          break;
+        }
+
+        auto arg = parse_expr();
+        if (!arg) {
+          break;
+        }
+
+        args.emplace_back(std::move(arg));
+        if (eof() || (at(0) == '>')) {
+          break;
+        }
+        const auto& comma = at(0);
+        if (comma != ',') {
+          throw_error("expected either ',' or '>' here", &comma);
+        }
+        next();
+      }
+
+      if (eof()) {
+        throw_error("missing '>'", &l_bracket);
+      }
+      const auto& r_bracket = at(0);
+      if (r_bracket != '>') {
+        throw_error("expected '>' here", &r_bracket);
+      }
+      next();
+    }
+
+    return std::make_unique<TypeInstance>(&name, std::move(args));
+  }
+
+  [[nodiscard]] auto parse_struct_decl(const Token& struct_keyword) -> std::unique_ptr<StructNode>
+  {
+    if (eof()) {
+      throw_error("expected name after this", &struct_keyword);
+    }
+    const auto& name = at(0);
+    if (name != TK::identifier) {
+      throw_error("expected this to be an struct name", &name);
+    }
+    next();
+
+    if (eof()) {
+      throw_error("expected struct body after this", &name);
+    }
+
+    if (at(0) == '<') {
+      // TODO: type parameters
+    }
+
+    const auto& l_bracket = at(0);
+    if (l_bracket != '{') {
+      throw_error("expected '{' here", &l_bracket);
+    }
+    next();
+
+    std::vector<std::unique_ptr<DeclNode>> fields;
+
+    while (!eof()) {
+      if (at(0) == '}') {
+        break;
+      }
+      const auto& name = at(0);
+      if (name != TK::identifier) {
+        throw_error("expected field name or '}' here", &name);
+      }
+      next();
+
+      if (eof() || (at(0) != ':')) {
+        throw_error("expected ':' after field name", &name);
+      }
+      const auto& colon = at(0);
+      next();
+
+      auto type = parse_type();
+      if (!type) {
+        throw_error("expected type after this", &colon);
+      }
+
+      auto field = std::make_unique<DeclNode>(name, nullptr, /*immutable=*/false, std::move(type));
+
+      fields.emplace_back(std::move(field));
+
+      if (eof()) {
+        break;
+      }
+      if (at(0) == '}') {
+        break;
+      }
+      const auto& comma = at(0);
+      if (comma != ',') {
+        throw_error("expected either ',' or '}' here", &comma);
+      }
+      next();
+    }
+
+    if (eof()) {
+      throw_error("missing '}'", &l_bracket);
+    }
+
+    const auto& r_bracket = at(0);
+    if (r_bracket != '}') {
+      throw_error("expected this to be '}'", &r_bracket);
+    }
+    next();
+
+    return std::make_unique<StructNode>(&name, std::move(fields));
+  }
+
+  [[nodiscard]] auto parse_return_stmt(const Token& return_token) -> std::unique_ptr<ReturnNode>
+  {
+    auto value = parse_expr();
+    terminate_stmt();
+    return std::make_unique<ReturnNode>(std::move(value));
+  }
+
+  [[nodiscard]] auto parse_let_stmt(const Token& let_token) -> NodePtr
+  {
+    if (eof()) {
+      throw_error("missing variable name", &let_token);
+    }
+
+    const auto& name = at(0);
+    if (name != TK::identifier) {
+      throw_error("expected this to be a variable name", &name);
+    }
+    next();
+
+    const auto& equals = at(0);
+    if (equals != '=') {
+      throw_error("expected '=' here", &equals);
+    }
+    next();
+
+    auto value = parse_expr();
+
+    terminate_stmt();
+
+    return std::make_unique<DeclNode>(name, std::move(value), /*immutable=*/true);
   }
 
   [[nodiscard]] auto parse_print_stmt(const Token& print_token) -> NodePtr
@@ -127,18 +444,24 @@ protected:
     while (!eof() && (at(0) == '+' || at(0) == '-')) {
       const auto& op = at(0);
       next();
+      if (eof()) {
+        missing_r_operand(&op);
+      }
       auto rhs = parse_mul_div_expr();
       lhs = std::make_unique<AddExpr>(std::move(lhs), std::move(rhs), &op);
     }
     return lhs;
   }
 
-  ExprPtr parse_mul_div_expr()
+  [[nodiscard]] auto parse_mul_div_expr() -> ExprPtr
   {
     auto lhs = parse_primary_expr();
     while (!eof() && (at(0) == '*' || at(0) == '/')) {
       const auto& op = at(0);
       next();
+      if (eof()) {
+        missing_r_operand(&op);
+      }
       auto rhs = parse_primary_expr();
       lhs = std::make_unique<MulExpr>(std::move(lhs), std::move(rhs), &op);
     }
@@ -157,9 +480,56 @@ protected:
     } else if (first == TK::float_literal) {
       next();
       return std::make_unique<FloatLiteralExpr>(&first);
+    } else if (first == TK::identifier) {
+      next();
+      if (!eof() && (at(0) == '(')) {
+        const auto& l_paren = at(0);
+        next();
+        return parse_call_expr(first, l_paren);
+      }
+      return std::make_unique<VarExpr>(first);
+    } else {
+      throw_error("expected an expression here", &first);
     }
 
     return nullptr;
+  }
+
+  [[nodiscard]] auto parse_call_expr(const Token& name, const Token& l_paren) -> std::unique_ptr<CallExpr>
+  {
+    std::vector<CallExpr::NamedArg> args;
+
+    while (!eof()) {
+      // TODO : named args
+
+      if (at(0) == ')') {
+        break;
+      }
+
+      auto value = parse_expr();
+
+      args.emplace_back(CallExpr::NamedArg(nullptr, std::move(value)));
+      if (eof()) {
+        break;
+      }
+      const auto& comma = at(0);
+      if (comma != ',') {
+        break;
+      }
+      next();
+    }
+
+    if (eof()) {
+      throw_error("missing ')'", &l_paren);
+    }
+
+    const auto& r_paren = at(0);
+    if (r_paren != ')') {
+      throw_error("expected ')' here", &r_paren);
+    }
+    next();
+
+    return std::make_unique<CallExpr>(&name, std::move(args));
   }
 };
 

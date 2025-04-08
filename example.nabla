@@ -1,2 +1,3 @@
-
-print('test: ', 42 * 4)
+let foo = 4;
+print(25 * foo + 5);
+print(42.5 * 2.0 + 2.5)
